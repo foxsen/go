@@ -369,7 +369,18 @@ func relocsym(s *LSym) {
 
 		switch r.Type {
 		default:
-			o = 0
+			switch siz {
+			default:
+				Diag("bad reloc size %#x for %s", uint32(siz), r.Sym.Name)
+			case 1:
+				o = int64(s.P[off])
+			case 2:
+				o = int64(Ctxt.Arch.ByteOrder.Uint16(s.P[off:]))
+			case 4:
+				o = int64(Ctxt.Arch.ByteOrder.Uint32(s.P[off:]))
+			case 8:
+				o = int64(Ctxt.Arch.ByteOrder.Uint64(s.P[off:]))
+			}
 			if Thearch.Archreloc(r, s, &o) < 0 {
 				Diag("unknown reloc %d", r.Type)
 			}
@@ -778,7 +789,6 @@ func Codeblk(addr int64, size int64) {
 	}
 
 	eaddr := addr + size
-	var n int64
 	var q []byte
 	for ; sym != nil; sym = sym.Next {
 		if !sym.Reachable {
@@ -797,20 +807,18 @@ func Codeblk(addr int64, size int64) {
 		}
 
 		fmt.Fprintf(&Bso, "%.6x\t%-20s\n", uint64(int64(addr)), sym.Name)
-		n = sym.Size
 		q = sym.P
 
-		for n >= 16 {
-			fmt.Fprintf(&Bso, "%.6x\t%-20.16I\n", uint64(addr), q)
+		for len(q) >= 16 {
+			fmt.Fprintf(&Bso, "%.6x\t% x\n", uint64(addr), q[:16])
 			addr += 16
 			q = q[16:]
-			n -= 16
 		}
 
-		if n > 0 {
-			fmt.Fprintf(&Bso, "%.6x\t%-20.*I\n", uint64(addr), int(n), q)
+		if len(q) > 0 {
+			fmt.Fprintf(&Bso, "%.6x\t% x\n", uint64(addr), q)
+			addr += int64(len(q))
 		}
-		addr += n
 	}
 
 	if addr < eaddr {

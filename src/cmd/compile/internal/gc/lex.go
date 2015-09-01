@@ -85,7 +85,7 @@ const (
 )
 
 func usage() {
-	fmt.Printf("usage: %cg [options] file.go...\n", Thearch.Thechar)
+	fmt.Printf("usage: compile [options] file.go...\n")
 	obj.Flagprint(1)
 	Exit(2)
 }
@@ -111,7 +111,7 @@ func doversion() {
 	if p != "" {
 		sep = " "
 	}
-	fmt.Printf("%cg version %s%s%s\n", Thearch.Thechar, obj.Getgoversion(), sep, p)
+	fmt.Printf("compile version %s%s%s\n", obj.Getgoversion(), sep, p)
 	os.Exit(0)
 }
 
@@ -305,7 +305,7 @@ func Main() {
 
 	Thearch.Betypeinit()
 	if Widthptr == 0 {
-		Fatal("betypeinit failed")
+		Fatalf("betypeinit failed")
 	}
 
 	lexinit()
@@ -1612,6 +1612,11 @@ func getlinepragma() int {
 			return c
 		}
 
+		if verb == "go:norace" {
+			norace = true
+			return c
+		}
+
 		if verb == "go:nosplit" {
 			nosplit = true
 			return c
@@ -2195,7 +2200,7 @@ func lexinit() {
 		etype = syms[i].etype
 		if etype != Txxx {
 			if etype < 0 || etype >= len(Types) {
-				Fatal("lexinit: %s bad etype", s.Name)
+				Fatalf("lexinit: %s bad etype", s.Name)
 			}
 			s1 = Pkglookup(syms[i].name, builtinpkg)
 			t = Types[etype]

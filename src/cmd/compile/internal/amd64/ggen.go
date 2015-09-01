@@ -36,10 +36,10 @@ func defframe(ptxt *obj.Prog) {
 			continue
 		}
 		if n.Class != gc.PAUTO {
-			gc.Fatal("needzero class %d", n.Class)
+			gc.Fatalf("needzero class %d", n.Class)
 		}
 		if n.Type.Width%int64(gc.Widthptr) != 0 || n.Xoffset%int64(gc.Widthptr) != 0 || n.Type.Width == 0 {
-			gc.Fatal("var %v has size %d offset %d", gc.Nconv(n, obj.FmtLong), int(n.Type.Width), int(n.Xoffset))
+			gc.Fatalf("var %v has size %d offset %d", gc.Nconv(n, obj.FmtLong), int(n.Type.Width), int(n.Xoffset))
 		}
 
 		if lo != hi && n.Xoffset+n.Type.Width >= lo-int64(2*gc.Widthreg) {
@@ -124,7 +124,7 @@ func zerorange(p *obj.Prog, frame int64, lo int64, hi int64, ax *uint32) *obj.Pr
 	if cnt%int64(gc.Widthreg) != 0 {
 		// should only happen with nacl
 		if cnt%int64(gc.Widthptr) != 0 {
-			gc.Fatal("zerorange count not a multiple of widthptr %d", cnt)
+			gc.Fatalf("zerorange count not a multiple of widthptr %d", cnt)
 		}
 		p = appendpp(p, x86.AMOVL, obj.TYPE_REG, x86.REG_AX, 0, obj.TYPE_MEM, x86.REG_SP, frame+lo)
 		lo += int64(gc.Widthptr)
@@ -306,7 +306,7 @@ func dodiv(op int, nl *gc.Node, nr *gc.Node, res *gc.Node) {
  * known to be dead.
  */
 func savex(dr int, x *gc.Node, oldx *gc.Node, res *gc.Node, t *gc.Type) {
-	r := reg[dr]
+	r := uint8(gc.GetReg(dr))
 
 	// save current ax and dx if they are live
 	// and not the destination
@@ -319,14 +319,14 @@ func savex(dr int, x *gc.Node, oldx *gc.Node, res *gc.Node, t *gc.Type) {
 		gmove(x, oldx)
 		x.Type = t
 		oldx.Etype = r // squirrel away old r value
-		reg[dr] = 1
+		gc.SetReg(dr, 1)
 	}
 }
 
 func restx(x *gc.Node, oldx *gc.Node) {
 	if oldx.Op != 0 {
 		x.Type = gc.Types[gc.TINT64]
-		reg[x.Reg] = oldx.Etype
+		gc.SetReg(int(x.Reg), int(oldx.Etype))
 		gmove(oldx, x)
 		gc.Regfree(oldx)
 	}
@@ -411,7 +411,7 @@ func cgen_shift(op int, bounded bool, nl *gc.Node, nr *gc.Node, res *gc.Node) {
 		nr = &n5
 	}
 
-	rcx := int(reg[x86.REG_CX])
+	rcx := gc.GetReg(x86.REG_CX)
 	var n1 gc.Node
 	gc.Nodreg(&n1, gc.Types[gc.TUINT32], x86.REG_CX)
 

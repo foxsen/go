@@ -425,7 +425,7 @@ func adjustpointers(scanp unsafe.Pointer, cbv *bitvector, adjinfo *adjustinfo, f
 	num := uintptr(bv.n)
 	for i := uintptr(0); i < num; i++ {
 		if stackDebug >= 4 {
-			print("        ", add(scanp, i*ptrSize), ":", ptrnames[ptrbit(&bv, i)], ":", hex(*(*uintptr)(add(scanp, i*ptrSize))), " # ", i, " ", bv.bytedata[i/4], "\n")
+			print("        ", add(scanp, i*ptrSize), ":", ptrnames[ptrbit(&bv, i)], ":", hex(*(*uintptr)(add(scanp, i*ptrSize))), " # ", i, " ", bv.bytedata[i/8], "\n")
 		}
 		if ptrbit(&bv, i) == 1 {
 			pp := (*uintptr)(add(scanp, i*ptrSize))
@@ -639,6 +639,7 @@ func copystack(gp *g, newsize uintptr) {
 	oldsize := gp.stackAlloc
 	gp.stackAlloc = newsize
 	gp.stkbar = newstkbar
+	gp.stktopsp += adjinfo.delta
 
 	// free old stack
 	if stackPoisonCopy != 0 {
@@ -669,7 +670,7 @@ func newstack() {
 		throw("stack growth after fork")
 	}
 	if thisg.m.morebuf.g.ptr() != thisg.m.curg {
-		print("runtime: newstack called from g=", thisg.m.morebuf.g, "\n"+"\tm=", thisg.m, " m->curg=", thisg.m.curg, " m->g0=", thisg.m.g0, " m->gsignal=", thisg.m.gsignal, "\n")
+		print("runtime: newstack called from g=", hex(thisg.m.morebuf.g), "\n"+"\tm=", thisg.m, " m->curg=", thisg.m.curg, " m->g0=", thisg.m.g0, " m->gsignal=", thisg.m.gsignal, "\n")
 		morebuf := thisg.m.morebuf
 		traceback(morebuf.pc, morebuf.sp, morebuf.lr, morebuf.g.ptr())
 		throw("runtime: wrong goroutine in newstack")

@@ -49,7 +49,7 @@ const (
 // Reports whether the signal was sent. If not, the caller typically crashes the program.
 func sigsend(s uint32) bool {
 	bit := uint32(1) << uint(s&31)
-	if !sig.inuse || s < 0 || int(s) >= 32*len(sig.wanted) || sig.wanted[s/32]&bit == 0 {
+	if !sig.inuse || s >= uint32(32*len(sig.wanted)) || sig.wanted[s/32]&bit == 0 {
 		return false
 	}
 
@@ -137,7 +137,7 @@ func signal_enable(s uint32) {
 		return
 	}
 
-	if int(s) >= len(sig.wanted)*32 {
+	if s >= uint32(len(sig.wanted)*32) {
 		return
 	}
 	sig.wanted[s/32] |= 1 << (s & 31)
@@ -146,7 +146,7 @@ func signal_enable(s uint32) {
 
 // Must only be called from a single goroutine at a time.
 func signal_disable(s uint32) {
-	if int(s) >= len(sig.wanted)*32 {
+	if s >= uint32(len(sig.wanted)*32) {
 		return
 	}
 	sig.wanted[s/32] &^= 1 << (s & 31)
@@ -155,7 +155,7 @@ func signal_disable(s uint32) {
 
 // Must only be called from a single goroutine at a time.
 func signal_ignore(s uint32) {
-	if int(s) >= len(sig.wanted)*32 {
+	if s >= uint32(len(sig.wanted)*32) {
 		return
 	}
 	sig.wanted[s/32] &^= 1 << (s & 31)
@@ -164,6 +164,15 @@ func signal_ignore(s uint32) {
 
 // This runs on a foreign stack, without an m or a g.  No stack split.
 //go:nosplit
+//go:norace
 func badsignal(sig uintptr) {
-	cgocallback(unsafe.Pointer(funcPC(sigsend)), noescape(unsafe.Pointer(&sig)), unsafe.Sizeof(sig))
+	cgocallback(unsafe.Pointer(funcPC(badsignalgo)), noescape(unsafe.Pointer(&sig)), unsafe.Sizeof(sig))
+}
+
+func badsignalgo(sig uintptr) {
+	if !sigsend(uint32(sig)) {
+		// A foreign thread received the signal sig, and the
+		// Go code does not want to handle it.
+		raisebadsignal(int32(sig))
+	}
 }

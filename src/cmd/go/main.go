@@ -95,6 +95,7 @@ var commands = []*Command{
 	helpBuildmode,
 	helpFileType,
 	helpGopath,
+	helpEnvironment,
 	helpImportPath,
 	helpPackages,
 	helpTestflag,
@@ -234,12 +235,35 @@ var documentationTemplate = `// Copyright 2011 The Go Authors.  All rights reser
 package main
 `
 
+// An errWriter wraps a writer, recording whether a write error occurred.
+type errWriter struct {
+	w   io.Writer
+	err error
+}
+
+func (w *errWriter) Write(b []byte) (int, error) {
+	n, err := w.w.Write(b)
+	if err != nil {
+		w.err = err
+	}
+	return n, err
+}
+
 // tmpl executes the given template text on data, writing the result to w.
 func tmpl(w io.Writer, text string, data interface{}) {
 	t := template.New("top")
 	t.Funcs(template.FuncMap{"trim": strings.TrimSpace, "capitalize": capitalize})
 	template.Must(t.Parse(text))
-	if err := t.Execute(w, data); err != nil {
+	ew := &errWriter{w: w}
+	err := t.Execute(ew, data)
+	if ew.err != nil {
+		// I/O error writing. Ignore write on closed pipe.
+		if strings.Contains(ew.err.Error(), "pipe") {
+			os.Exit(1)
+		}
+		fatalf("writing output: %v", ew.err)
+	}
+	if err != nil {
 		panic(err)
 	}
 }
@@ -422,11 +446,10 @@ func runOut(dir string, cmdargs ...interface{}) []byte {
 // The environment is the current process's environment
 // but with an updated $PWD, so that an os.Getwd in the
 // child will be faster.
-func envForDir(dir string) []string {
-	env := os.Environ()
+func envForDir(dir string, base []string) []string {
 	// Internally we only use rooted paths, so dir is rooted.
 	// Even if dir is not rooted, no harm done.
-	return mergeEnvLists([]string{"PWD=" + dir}, env)
+	return mergeEnvLists([]string{"PWD=" + dir}, base)
 }
 
 // mergeEnvLists merges the two environment lists such that

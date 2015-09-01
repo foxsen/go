@@ -36,10 +36,10 @@ func defframe(ptxt *obj.Prog) {
 			continue
 		}
 		if n.Class != gc.PAUTO {
-			gc.Fatal("needzero class %d", n.Class)
+			gc.Fatalf("needzero class %d", n.Class)
 		}
 		if n.Type.Width%int64(gc.Widthptr) != 0 || n.Xoffset%int64(gc.Widthptr) != 0 || n.Type.Width == 0 {
-			gc.Fatal("var %v has size %d offset %d", gc.Nconv(n, obj.FmtLong), int(n.Type.Width), int(n.Xoffset))
+			gc.Fatalf("var %v has size %d offset %d", gc.Nconv(n, obj.FmtLong), int(n.Type.Width), int(n.Xoffset))
 		}
 
 		if lo != hi && n.Xoffset+n.Type.Width >= lo-int64(2*gc.Widthreg) {
@@ -71,7 +71,10 @@ func zerorange(p *obj.Prog, frame int64, lo int64, hi int64) *obj.Prog {
 		for i := int64(0); i < cnt; i += int64(gc.Widthptr) {
 			p = appendpp(p, ppc64.AMOVD, obj.TYPE_REG, ppc64.REGZERO, 0, obj.TYPE_MEM, ppc64.REGSP, 8+frame+lo+i)
 		}
-	} else if cnt <= int64(128*gc.Widthptr) {
+		// TODO(dfc): https://golang.org/issue/12108
+		// If DUFFZERO is used inside a tail call (see genwrapper) it will
+		// overwrite the link register.
+	} else if false && cnt <= int64(128*gc.Widthptr) {
 		p = appendpp(p, ppc64.AADD, obj.TYPE_CONST, 0, 8+frame+lo-8, obj.TYPE_REG, ppc64.REGRT1, 0)
 		p.Reg = ppc64.REGSP
 		p = appendpp(p, obj.ADUFFZERO, obj.TYPE_NONE, 0, 0, obj.TYPE_MEM, 0, 0)
@@ -288,7 +291,7 @@ func cgen_hmul(nl *gc.Node, nr *gc.Node, res *gc.Node) {
 		}
 
 	default:
-		gc.Fatal("cgen_hmul %v", t)
+		gc.Fatalf("cgen_hmul %v", t)
 	}
 
 	gc.Cgen(&n1, res)
@@ -408,7 +411,7 @@ func clearfat(nl *gc.Node) {
 	q := uint64(w / 8) // dwords
 
 	if gc.Reginuse(ppc64.REGRT1) {
-		gc.Fatal("%v in use during clearfat", obj.Rconv(ppc64.REGRT1))
+		gc.Fatalf("%v in use during clearfat", obj.Rconv(ppc64.REGRT1))
 	}
 
 	var r0 gc.Node
@@ -442,7 +445,10 @@ func clearfat(nl *gc.Node) {
 
 		// The loop leaves R3 on the last zeroed dword
 		boff = 8
-	} else if q >= 4 {
+		// TODO(dfc): https://golang.org/issue/12108
+		// If DUFFZERO is used inside a tail call (see genwrapper) it will
+		// overwrite the link register.
+	} else if false && q >= 4 {
 		p := gins(ppc64.ASUB, nil, &dst)
 		p.From.Type = obj.TYPE_CONST
 		p.From.Offset = 8
@@ -493,7 +499,7 @@ func expandchecks(firstp *obj.Prog) {
 			gc.Warnl(int(p.Lineno), "generated nil check")
 		}
 		if p.From.Type != obj.TYPE_REG {
-			gc.Fatal("invalid nil check %v\n", p)
+			gc.Fatalf("invalid nil check %v\n", p)
 		}
 
 		/*

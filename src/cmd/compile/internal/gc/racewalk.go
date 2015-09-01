@@ -42,6 +42,7 @@ func ispkgin(pkgs []string) bool {
 	return false
 }
 
+// TODO(rsc): Remove. Put //go:norace on forkAndExecInChild instead.
 func isforkfunc(fn *Node) bool {
 	// Special case for syscall.forkAndExecInChild.
 	// In the child, this function must not acquire any locks, because
@@ -52,7 +53,7 @@ func isforkfunc(fn *Node) bool {
 }
 
 func racewalk(fn *Node) {
-	if ispkgin(omit_pkgs) || isforkfunc(fn) {
+	if ispkgin(omit_pkgs) || isforkfunc(fn) || fn.Func.Norace {
 		return
 	}
 
@@ -115,7 +116,7 @@ func racewalknode(np **Node, init **NodeList, wr int, skip int) {
 	}
 	setlineno(n)
 	if init == nil {
-		Fatal("racewalk: bad init list")
+		Fatalf("racewalk: bad init list")
 	}
 	if init == &n.Ninit {
 		// If init == &n->ninit and n->ninit is non-nil,
@@ -135,7 +136,7 @@ func racewalknode(np **Node, init **NodeList, wr int, skip int) {
 
 	switch n.Op {
 	default:
-		Fatal("racewalk: unknown node type %v", Oconv(int(n.Op), 0))
+		Fatalf("racewalk: unknown node type %v", Oconv(int(n.Op), 0))
 
 	case OAS, OASWB, OAS2FUNC:
 		racewalknode(&n.Left, init, 1, 0)

@@ -373,6 +373,13 @@ func symtab() {
 	s.Reachable = true
 	symgofunc := s
 
+	s = Linklookup(Ctxt, "runtime.gcbits.*", 0)
+	s.Type = obj.SGCBITS
+	s.Local = true
+	s.Size = 0
+	s.Reachable = true
+	symgcbits := s
+
 	symtypelink := Linklookup(Ctxt, "runtime.typelink", 0)
 
 	symt = Linklookup(Ctxt, "runtime.symtab", 0)
@@ -411,6 +418,12 @@ func symtab() {
 			s.Outer = symgostring
 		}
 
+		if strings.HasPrefix(s.Name, "runtime.gcbits.") {
+			s.Type = obj.SGCBITS
+			s.Hide = 1
+			s.Outer = symgcbits
+		}
+
 		if strings.HasPrefix(s.Name, "go.func.") {
 			s.Type = obj.SGOFUNC
 			s.Hide = 1
@@ -439,11 +452,7 @@ func symtab() {
 	// runtime to use. Any changes here must be matched by changes to
 	// the definition of moduledata in runtime/symtab.go.
 	// This code uses several global variables that are set by pcln.go:pclntab.
-	moduledata := Linklookup(Ctxt, "runtime.firstmoduledata", 0)
-	moduledata.Type = obj.SNOPTRDATA
-	moduledata.Size = 0 // truncate symbol back to 0 bytes to reinitialize
-	moduledata.Reachable = true
-	moduledata.Local = true
+	moduledata := Ctxt.Moduledata
 	// The pclntab slice
 	Addaddr(Ctxt, moduledata, Linklookup(Ctxt, "runtime.pclntab", 0))
 	adduint(Ctxt, moduledata, uint64(Linklookup(Ctxt, "runtime.pclntab", 0).Size))

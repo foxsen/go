@@ -34,10 +34,10 @@ func defframe(ptxt *obj.Prog) {
 			continue
 		}
 		if n.Class != gc.PAUTO {
-			gc.Fatal("needzero class %d", n.Class)
+			gc.Fatalf("needzero class %d", n.Class)
 		}
 		if n.Type.Width%int64(gc.Widthptr) != 0 || n.Xoffset%int64(gc.Widthptr) != 0 || n.Type.Width == 0 {
-			gc.Fatal("var %v has size %d offset %d", gc.Nconv(n, obj.FmtLong), int(n.Type.Width), int(n.Xoffset))
+			gc.Fatalf("var %v has size %d offset %d", gc.Nconv(n, obj.FmtLong), int(n.Type.Width), int(n.Xoffset))
 		}
 		if lo != hi && n.Xoffset+n.Type.Width == lo-int64(2*gc.Widthptr) {
 			// merge with range we already have
@@ -319,7 +319,7 @@ func dodiv(op int, nl *gc.Node, nr *gc.Node, res *gc.Node, ax *gc.Node, dx *gc.N
 }
 
 func savex(dr int, x *gc.Node, oldx *gc.Node, res *gc.Node, t *gc.Type) {
-	r := int(reg[dr])
+	r := gc.GetReg(dr)
 	gc.Nodreg(x, gc.Types[gc.TINT32], dr)
 
 	// save current ax and dx if they are live
@@ -350,7 +350,7 @@ func restx(x *gc.Node, oldx *gc.Node) {
  */
 func cgen_div(op int, nl *gc.Node, nr *gc.Node, res *gc.Node) {
 	if gc.Is64(nl.Type) {
-		gc.Fatal("cgen_div %v", nl.Type)
+		gc.Fatalf("cgen_div %v", nl.Type)
 	}
 
 	var t *gc.Type
@@ -377,7 +377,7 @@ func cgen_div(op int, nl *gc.Node, nr *gc.Node, res *gc.Node) {
  */
 func cgen_shift(op int, bounded bool, nl *gc.Node, nr *gc.Node, res *gc.Node) {
 	if nl.Type.Width > 4 {
-		gc.Fatal("cgen_shift %v", nl.Type)
+		gc.Fatalf("cgen_shift %v", nl.Type)
 	}
 
 	w := int(nl.Type.Width * 8)
@@ -408,7 +408,7 @@ func cgen_shift(op int, bounded bool, nl *gc.Node, nr *gc.Node, res *gc.Node) {
 	var oldcx gc.Node
 	var cx gc.Node
 	gc.Nodreg(&cx, gc.Types[gc.TUINT32], x86.REG_CX)
-	if reg[x86.REG_CX] > 1 && !gc.Samereg(&cx, res) {
+	if gc.GetReg(x86.REG_CX) > 1 && !gc.Samereg(&cx, res) {
 		gc.Tempname(&oldcx, gc.Types[gc.TUINT32])
 		gmove(&cx, &oldcx)
 	}
@@ -677,7 +677,7 @@ func cgen_floatsse(n *gc.Node, res *gc.Node) {
 	switch n.Op {
 	default:
 		gc.Dump("cgen_floatsse", n)
-		gc.Fatal("cgen_floatsse %v", gc.Oconv(int(n.Op), 0))
+		gc.Fatalf("cgen_floatsse %v", gc.Oconv(int(n.Op), 0))
 		return
 
 	case gc.OMINUS,

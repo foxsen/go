@@ -387,6 +387,11 @@ func TestSetBytes(t *testing.T) {
 }
 
 func checkBytes(b []byte) bool {
+	// trim leading zero bytes since Bytes() won't return them
+	// (was issue 12231)
+	for len(b) > 0 && b[0] == 0 {
+		b = b[1:]
+	}
 	b2 := new(Int).SetBytes(b).Bytes()
 	return bytes.Equal(b, b2)
 }
@@ -1177,6 +1182,53 @@ func BenchmarkBitsetNegOrig(b *testing.B) {
 	b.StartTimer()
 	for i := b.N - 1; i >= 0; i-- {
 		altSetBit(z, z, i&512, 0)
+	}
+}
+
+// tri generates the trinomial 2**(n*2) - 2**n - 1, which is always 3 mod 4 and
+// 7 mod 8, so that 2 is always a quadratic residue.
+func tri(n uint) *Int {
+	x := NewInt(1)
+	x.Lsh(x, n)
+	x2 := new(Int).Lsh(x, n)
+	x2.Sub(x2, x)
+	x2.Sub(x2, intOne)
+	return x2
+}
+
+func BenchmarkModSqrt225_Tonelli(b *testing.B) {
+	p := tri(225)
+	x := NewInt(2)
+	for i := 0; i < b.N; i++ {
+		x.SetUint64(2)
+		x.modSqrtTonelliShanks(x, p)
+	}
+}
+
+func BenchmarkModSqrt224_3Mod4(b *testing.B) {
+	p := tri(225)
+	x := new(Int).SetUint64(2)
+	for i := 0; i < b.N; i++ {
+		x.SetUint64(2)
+		x.modSqrt3Mod4Prime(x, p)
+	}
+}
+
+func BenchmarkModSqrt5430_Tonelli(b *testing.B) {
+	p := tri(5430)
+	x := new(Int).SetUint64(2)
+	for i := 0; i < b.N; i++ {
+		x.SetUint64(2)
+		x.modSqrtTonelliShanks(x, p)
+	}
+}
+
+func BenchmarkModSqrt5430_3Mod4(b *testing.B) {
+	p := tri(5430)
+	x := new(Int).SetUint64(2)
+	for i := 0; i < b.N; i++ {
+		x.SetUint64(2)
+		x.modSqrt3Mod4Prime(x, p)
 	}
 }
 

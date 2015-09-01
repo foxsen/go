@@ -51,6 +51,10 @@ rule is that if the local installation is running version "go1", get
 searches for a branch or tag named "go1". If no such version exists it
 retrieves the most recent version of the package.
 
+Unless vendoring support is disabled (see 'go help gopath'),
+when go get checks out or updates a Git repository,
+it also updates any git submodules referenced by the repository.
+
 For more about specifying packages, see 'go help packages'.
 
 For more about how 'go get' finds source code to
@@ -85,8 +89,12 @@ func runGet(cmd *Command, args []string) {
 
 	// Phase 1.  Download/update.
 	var stk importStack
+	mode := 0
+	if *getT {
+		mode |= getTestDeps
+	}
 	for _, arg := range downloadPaths(args) {
-		download(arg, nil, &stk, *getT)
+		download(arg, nil, &stk, mode)
 	}
 	exitIfErrors()
 
@@ -159,15 +167,15 @@ var downloadRootCache = map[string]bool{}
 
 // download runs the download half of the get command
 // for the package named by the argument.
-func download(arg string, parent *Package, stk *importStack, getTestDeps bool) {
-	load := func(path string) *Package {
+func download(arg string, parent *Package, stk *importStack, mode int) {
+	load := func(path string, mode int) *Package {
 		if parent == nil {
-			return loadPackage(arg, stk)
+			return loadPackage(path, stk)
 		}
-		return loadImport(arg, parent.Dir, nil, stk, nil)
+		return loadImport(path, parent.Dir, parent, stk, nil, mode)
 	}
 
-	p := load(arg)
+	p := load(arg, mode)
 	if p.Error != nil && p.Error.hard {
 		errorf("%s", p.Error)
 		return
@@ -191,7 +199,7 @@ func download(arg string, parent *Package, stk *importStack, getTestDeps bool) {
 	// Only process each package once.
 	// (Unless we're fetching test dependencies for this package,
 	// in which case we want to process it again.)
-	if downloadCache[arg] && !getTestDeps {
+	if downloadCache[arg] && mode&getTestDeps == 0 {
 		return
 	}
 	downloadCache[arg] = true
@@ -200,15 +208,14 @@ func download(arg string, parent *Package, stk *importStack, getTestDeps bool) {
 	wildcardOkay := len(*stk) == 0
 	isWildcard := false
 
-	stk.push(arg)
-	defer stk.pop()
-
 	// Download if the package is missing, or update if we're using -u.
 	if p.Dir == "" || *getU {
 		// The actual download.
+		stk.push(arg)
 		err := downloadPackage(p)
 		if err != nil {
 			errorf("%s", &PackageError{ImportStack: stk.copy(), Err: err.Error()})
+			stk.pop()
 			return
 		}
 
@@ -221,6 +228,7 @@ func download(arg string, parent *Package, stk *importStack, getTestDeps bool) {
 				fmt.Fprintf(os.Stderr, "warning: package %v\n", strings.Join(*stk, "\n\timports "))
 			}
 		}
+		stk.pop()
 
 		args := []string{arg}
 		// If the argument has a wildcard in it, re-evaluate the wildcard.
@@ -247,7 +255,10 @@ func download(arg string, parent *Package, stk *importStack, getTestDeps bool) {
 
 		pkgs = pkgs[:0]
 		for _, arg := range args {
-			p := load(arg)
+			// Note: load calls loadPackage or loadImport,
+			// which push arg onto stk already.
+			// Do not push here too, or else stk will say arg imports arg.
+			p := load(arg, mode)
 			if p.Error != nil {
 				errorf("%s", p.Error)
 				continue
@@ -282,16 +293,26 @@ func download(arg string, parent *Package, stk *importStack, getTestDeps bool) {
 				continue
 			}
 			// Don't get test dependencies recursively.
-			download(path, p, stk, false)
+			// Imports is already vendor-expanded.
+			download(path, p, stk, 0)
 		}
-		if getTestDeps {
+		if mode&getTestDeps != 0 {
 			// Process test dependencies when -t is specified.
 			// (Don't get test dependencies for test dependencies.)
+			// We pass useVendor here because p.load does not
+			// vendor-expand TestImports and XTestImports.
+			// The call to loadImport inside download needs to do that.
 			for _, path := range p.TestImports {
-				download(path, p, stk, false)
+				if path == "C" {
+					continue
+				}
+				download(path, p, stk, useVendor)
 			}
 			for _, path := range p.XTestImports {
-				download(path, p, stk, false)
+				if path == "C" {
+					continue
+				}
+				download(path, p, stk, useVendor)
 			}
 		}
 

@@ -645,16 +645,9 @@ func (t *Transport) dialConn(cm connectMethod) (*persistConn, error) {
 
 	if cm.targetScheme == "https" && !tlsDial {
 		// Initiate TLS and check remote host name against certificate.
-		cfg := t.TLSClientConfig
-		if cfg == nil || cfg.ServerName == "" {
-			host := cm.tlsHost()
-			if cfg == nil {
-				cfg = &tls.Config{ServerName: host}
-			} else {
-				clone := *cfg // shallow clone
-				clone.ServerName = host
-				cfg = &clone
-			}
+		cfg := cloneTLSClientConfig(t.TLSClientConfig)
+		if cfg.ServerName == "" {
+			cfg.ServerName = cm.tlsHost()
 		}
 		plainConn := pconn.conn
 		tlsConn := tls.Client(plainConn, cfg)
@@ -953,6 +946,13 @@ func (pc *persistConn) readLoop() {
 				}
 				return err
 			}
+		} else {
+			// Before send on rc.ch, as client might re-use the
+			// same *Request pointer, and we don't want to set this
+			// on t from this persistConn while the Transport
+			// potentially spins up a different persistConn for the
+			// caller's subsequent request.
+			pc.t.setReqCanceler(rc.req, nil)
 		}
 
 		pc.lk.Lock()
@@ -975,6 +975,7 @@ func (pc *persistConn) readLoop() {
 			// the underlying bufio reader.
 			select {
 			case <-rc.req.Cancel:
+				alive = false
 				pc.t.CancelRequest(rc.req)
 			case bodyEOF := <-waitForBodyRead:
 				pc.t.setReqCanceler(rc.req, nil) // before pc might return to idle pool
@@ -990,7 +991,6 @@ func (pc *persistConn) readLoop() {
 				alive = false
 			}
 		} else {
-			pc.t.setReqCanceler(rc.req, nil) // before pc might return to idle pool
 			alive = alive &&
 				!pc.sawEOF &&
 				pc.wroteRequest() &&
@@ -1163,6 +1163,19 @@ WaitResponse:
 	for {
 		select {
 		case err := <-writeErrCh:
+			if isNetWriteError(err) {
+				// Issue 11745. If we failed to write the request
+				// body, it's possible the server just heard enough
+				// and already wrote to us. Prioritize the server's
+				// response over returning a body write error.
+				select {
+				case re = <-resc:
+					pc.close()
+					break WaitResponse
+				case <-time.After(50 * time.Millisecond):
+					// Fall through.
+				}
+			}
 			if err != nil {
 				re = responseAndError{nil, err}
 				pc.close()
@@ -1191,6 +1204,9 @@ WaitResponse:
 				}
 			default:
 				re = responseAndError{err: errClosed}
+				if pc.isCanceled() {
+					re = responseAndError{err: errRequestCanceled}
+				}
 			}
 			break WaitResponse
 		case <-respHeaderTimer:
@@ -1365,3 +1381,81 @@ type fakeLocker struct{}
 
 func (fakeLocker) Lock()   {}
 func (fakeLocker) Unlock() {}
+
+func isNetWriteError(err error) bool {
+	switch e := err.(type) {
+	case *url.Error:
+		return isNetWriteError(e.Err)
+	case *net.OpError:
+		return e.Op == "write"
+	default:
+		return false
+	}
+}
+
+// cloneTLSConfig returns a shallow clone of the exported
+// fields of cfg, ignoring the unexported sync.Once, which
+// contains a mutex and must not be copied.
+//
+// The cfg must not be in active use by tls.Server, or else
+// there can still be a race with tls.Server updating SessionTicketKey
+// and our copying it, and also a race with the server setting
+// SessionTicketsDisabled=false on failure to set the random
+// ticket key.
+//
+// If cfg is nil, a new zero tls.Config is returned.
+func cloneTLSConfig(cfg *tls.Config) *tls.Config {
+	if cfg == nil {
+		return &tls.Config{}
+	}
+	return &tls.Config{
+		Rand:                     cfg.Rand,
+		Time:                     cfg.Time,
+		Certificates:             cfg.Certificates,
+		NameToCertificate:        cfg.NameToCertificate,
+		GetCertificate:           cfg.GetCertificate,
+		RootCAs:                  cfg.RootCAs,
+		NextProtos:               cfg.NextProtos,
+		ServerName:               cfg.ServerName,
+		ClientAuth:               cfg.ClientAuth,
+		ClientCAs:                cfg.ClientCAs,
+		InsecureSkipVerify:       cfg.InsecureSkipVerify,
+		CipherSuites:             cfg.CipherSuites,
+		PreferServerCipherSuites: cfg.PreferServerCipherSuites,
+		SessionTicketsDisabled:   cfg.SessionTicketsDisabled,
+		SessionTicketKey:         cfg.SessionTicketKey,
+		ClientSessionCache:       cfg.ClientSessionCache,
+		MinVersion:               cfg.MinVersion,
+		MaxVersion:               cfg.MaxVersion,
+		CurvePreferences:         cfg.CurvePreferences,
+	}
+}
+
+// cloneTLSClientConfig is like cloneTLSConfig but omits
+// the fields SessionTicketsDisabled and SessionTicketKey.
+// This makes it safe to call cloneTLSClientConfig on a config
+// in active use by a server.
+func cloneTLSClientConfig(cfg *tls.Config) *tls.Config {
+	if cfg == nil {
+		return &tls.Config{}
+	}
+	return &tls.Config{
+		Rand:                     cfg.Rand,
+		Time:                     cfg.Time,
+		Certificates:             cfg.Certificates,
+		NameToCertificate:        cfg.NameToCertificate,
+		GetCertificate:           cfg.GetCertificate,
+		RootCAs:                  cfg.RootCAs,
+		NextProtos:               cfg.NextProtos,
+		ServerName:               cfg.ServerName,
+		ClientAuth:               cfg.ClientAuth,
+		ClientCAs:                cfg.ClientCAs,
+		InsecureSkipVerify:       cfg.InsecureSkipVerify,
+		CipherSuites:             cfg.CipherSuites,
+		PreferServerCipherSuites: cfg.PreferServerCipherSuites,
+		ClientSessionCache:       cfg.ClientSessionCache,
+		MinVersion:               cfg.MinVersion,
+		MaxVersion:               cfg.MaxVersion,
+		CurvePreferences:         cfg.CurvePreferences,
+	}
+}

@@ -19,6 +19,13 @@ func defframe(ptxt *obj.Prog) {
 
 	ptxt.To.Val = int32(gc.Rnd(gc.Curfn.Type.Argwid, int64(gc.Widthptr)))
 	frame := uint32(gc.Rnd(gc.Stksize+gc.Maxarg, int64(gc.Widthreg)))
+
+	// arm64 requires that the frame size (not counting saved LR)
+	// be empty or be 8 mod 16. If not, pad it.
+	if frame != 0 && frame%16 != 8 {
+		frame += 8
+	}
+
 	ptxt.To.Offset = int64(frame)
 
 	// insert code to zero ambiguously live variables
@@ -36,10 +43,10 @@ func defframe(ptxt *obj.Prog) {
 			continue
 		}
 		if n.Class != gc.PAUTO {
-			gc.Fatal("needzero class %d", n.Class)
+			gc.Fatalf("needzero class %d", n.Class)
 		}
 		if n.Type.Width%int64(gc.Widthptr) != 0 || n.Xoffset%int64(gc.Widthptr) != 0 || n.Type.Width == 0 {
-			gc.Fatal("var %v has size %d offset %d", gc.Nconv(n, obj.FmtLong), int(n.Type.Width), int(n.Xoffset))
+			gc.Fatalf("var %v has size %d offset %d", gc.Nconv(n, obj.FmtLong), int(n.Type.Width), int(n.Xoffset))
 		}
 
 		if lo != hi && n.Xoffset+n.Type.Width >= lo-int64(2*gc.Widthreg) {
@@ -292,7 +299,7 @@ func cgen_hmul(nl *gc.Node, nr *gc.Node, res *gc.Node) {
 		}
 
 	default:
-		gc.Fatal("cgen_hmul %v", t)
+		gc.Fatalf("cgen_hmul %v", t)
 	}
 
 	gc.Cgen(&n1, res)
@@ -411,15 +418,12 @@ func clearfat(nl *gc.Node) {
 	c := uint64(w % 8) // bytes
 	q := uint64(w / 8) // dwords
 
-	if reg[arm64.REGRT1-arm64.REG_R0] > 0 {
-		gc.Fatal("R%d in use during clearfat", arm64.REGRT1-arm64.REG_R0)
-	}
-
 	var r0 gc.Node
 	gc.Nodreg(&r0, gc.Types[gc.TUINT64], arm64.REGZERO)
 	var dst gc.Node
+
+	// REGRT1 is reserved on arm64, see arm64/gsubr.go.
 	gc.Nodreg(&dst, gc.Types[gc.Tptr], arm64.REGRT1)
-	reg[arm64.REGRT1-arm64.REG_R0]++
 	gc.Agen(nl, &dst)
 
 	var boff uint64
@@ -477,8 +481,6 @@ func clearfat(nl *gc.Node) {
 		p.To.Type = obj.TYPE_MEM
 		p.To.Offset = int64(t + boff)
 	}
-
-	reg[arm64.REGRT1-arm64.REG_R0]--
 }
 
 // Called after regopt and peep have run.
@@ -497,7 +499,7 @@ func expandchecks(firstp *obj.Prog) {
 			gc.Warnl(int(p.Lineno), "generated nil check")
 		}
 		if p.From.Type != obj.TYPE_REG {
-			gc.Fatal("invalid nil check %v\n", p)
+			gc.Fatalf("invalid nil check %v\n", p)
 		}
 
 		// check is

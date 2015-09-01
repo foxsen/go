@@ -265,6 +265,7 @@ var cgoEnabled = map[string]bool{
 	"dragonfly/amd64": true,
 	"freebsd/386":     true,
 	"freebsd/amd64":   true,
+	"freebsd/arm":     true,
 	"linux/386":       true,
 	"linux/amd64":     true,
 	"linux/arm":       true,
@@ -968,7 +969,7 @@ func (ctxt *Context) matchFile(dir, name string, returnImports bool, allTags map
 	}
 
 	if strings.HasSuffix(filename, ".go") {
-		data, err = readImports(f, false)
+		data, err = readImports(f, false, nil)
 	} else {
 		data, err = readComments(f)
 	}

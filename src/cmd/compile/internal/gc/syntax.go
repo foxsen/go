@@ -81,7 +81,7 @@ func (n *Node) SetVal(v Val) {
 	if n.hasVal == -1 {
 		Debug['h'] = 1
 		Dump("have Opt", n)
-		Fatal("have Opt")
+		Fatalf("have Opt")
 	}
 	n.hasVal = +1
 	n.E = v.U
@@ -104,7 +104,7 @@ func (n *Node) SetOpt(x interface{}) {
 	if n.hasVal == +1 {
 		Debug['h'] = 1
 		Dump("have Val", n)
-		Fatal("have Val")
+		Fatalf("have Val")
 	}
 	n.hasVal = -1
 	n.E = x
@@ -169,6 +169,7 @@ type Func struct {
 
 	Endlineno int32
 
+	Norace         bool // func must not have race detector annotations
 	Nosplit        bool // func should not execute on separate stack
 	Nowritebarrier bool // emit compiler error instead of write barrier
 	Dupok          bool // duplicate definitions ok

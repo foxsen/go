@@ -98,7 +98,7 @@ type NilVal struct{}
 func (v Val) Ctype() int {
 	switch x := v.U.(type) {
 	default:
-		Fatal("unexpected Ctype for %T", v.U)
+		Fatalf("unexpected Ctype for %T", v.U)
 		panic("not reached")
 	case nil:
 		return 0
@@ -586,7 +586,7 @@ var xtop *NodeList
 
 var externdcl *NodeList
 
-var exportlist *NodeList
+var exportlist []*Node
 
 var importlist *NodeList // imported functions and methods with inlinable bodies
 
@@ -660,6 +660,7 @@ var (
 	nosplit        bool
 	nowritebarrier bool
 	systemstack    bool
+	norace         bool
 )
 
 var debuglive int
@@ -683,8 +684,6 @@ var Pc *obj.Prog
 var nodfp *Node
 
 var Disable_checknil int
-
-var zerosize int64
 
 type Flow struct {
 	Prog   *obj.Prog // actual instruction

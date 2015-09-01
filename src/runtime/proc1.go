@@ -414,7 +414,13 @@ func scang(gp *g) {
 			// the goroutine until we're done.
 			if castogscanstatus(gp, s, s|_Gscan) {
 				if !gp.gcscandone {
+					// Coordinate with traceback
+					// in sigprof.
+					for !cas(&gp.stackLock, 0, 1) {
+						osyield()
+					}
 					scanstack(gp)
+					atomicstore(&gp.stackLock, 0)
 					gp.gcscandone = true
 				}
 				restartg(gp)
@@ -982,6 +988,7 @@ func newextram() {
 	gp.sched.g = guintptr(unsafe.Pointer(gp))
 	gp.syscallpc = gp.sched.pc
 	gp.syscallsp = gp.sched.sp
+	gp.stktopsp = gp.sched.sp
 	// malg returns status as Gidle, change to Gsyscall before adding to allg
 	// where GC will see it.
 	casgstatus(gp, _Gidle, _Gsyscall)
@@ -1342,7 +1349,23 @@ func execute(gp *g, inheritTime bool) {
 		// GoSysExit has to happen when we have a P, but before GoStart.
 		// So we emit it here.
 		if gp.syscallsp != 0 && gp.sysblocktraced {
-			traceGoSysExit(gp.sysexitticks)
+			// Since gp.sysblocktraced is true, we must emit an event.
+			// There is a race between the code that initializes sysexitseq
+			// and sysexitticks (in exitsyscall, which runs without a P,
+			// and therefore is not stopped with the rest of the world)
+			// and the code that initializes a new trace.
+			// The recorded sysexitseq and sysexitticks must therefore
+			// be treated as "best effort". If they are valid for this trace,
+			// then great, use them for greater accuracy.
+			// But if they're not valid for this trace, assume that the
+			// trace was started after the actual syscall exit (but before
+			// we actually managed to start the goroutine, aka right now),
+			// and assign a fresh time stamp to keep the log consistent.
+			seq, ts := gp.sysexitseq, gp.sysexitticks
+			if seq == 0 || int64(seq)-int64(trace.seqStart) < 0 {
+				seq, ts = tracestamp()
+			}
+			traceGoSysExit(seq, ts)
 		}
 		traceGoStart()
 	}
@@ -1516,7 +1539,7 @@ func resetspinning() {
 	if _g_.m.spinning {
 		_g_.m.spinning = false
 		nmspinning = xadd(&sched.nmspinning, -1)
-		if nmspinning < 0 {
+		if int32(nmspinning) < 0 {
 			throw("findrunnable: negative nmspinning")
 		}
 	} else {
@@ -1980,6 +2003,7 @@ func exitsyscall(dummy int32) {
 	}
 
 	_g_.sysexitticks = 0
+	_g_.sysexitseq = 0
 	if trace.enabled {
 		// Wait till traceGoSysBlock event is emitted.
 		// This ensures consistency of the trace (the goroutine is started after it is blocked).
@@ -1990,7 +2014,7 @@ func exitsyscall(dummy int32) {
 		// Tracing code can invoke write barriers that cannot run without a P.
 		// So instead we remember the syscall exit time and emit the event
 		// in execute when we have a P.
-		_g_.sysexitticks = cputicks()
+		_g_.sysexitseq, _g_.sysexitticks = tracestamp()
 	}
 
 	_g_.m.locks--
@@ -2038,7 +2062,7 @@ func exitsyscallfast() bool {
 					// Denote blocking of the new syscall.
 					traceGoSysBlock(_g_.m.p.ptr())
 					// Denote completion of the current syscall.
-					traceGoSysExit(0)
+					traceGoSysExit(tracestamp())
 				})
 			}
 			_g_.m.p.ptr().syscalltick++
@@ -2062,7 +2086,7 @@ func exitsyscallfast() bool {
 						osyield()
 					}
 				}
-				traceGoSysExit(0)
+				traceGoSysExit(tracestamp())
 			}
 		})
 		if ok {
@@ -2244,6 +2268,7 @@ func newproc1(fn *funcval, argp *uint8, narg int32, nret int32, callerpc uintptr
 
 	memclr(unsafe.Pointer(&newg.sched), unsafe.Sizeof(newg.sched))
 	newg.sched.sp = sp
+	newg.stktopsp = sp
 	newg.sched.pc = funcPC(goexit) + _PCQuantum // +PCQuantum so that previous instruction is in same function
 	newg.sched.g = guintptr(unsafe.Pointer(newg))
 	gostartcallfn(&newg.sched, fn)
@@ -2477,6 +2502,11 @@ func sigprof(pc, sp, lr uintptr, gp *g, mp *m) {
 	// Profiling runs concurrently with GC, so it must not allocate.
 	mp.mallocing++
 
+	// Coordinate with stack barrier insertion in scanstack.
+	for !cas(&gp.stackLock, 0, 1) {
+		osyield()
+	}
+
 	// Define that a "user g" is a user-created goroutine, and a "system g"
 	// is one that is m->g0 or m->gsignal.
 	//
@@ -2580,6 +2610,7 @@ func sigprof(pc, sp, lr uintptr, gp *g, mp *m) {
 			}
 		}
 	}
+	atomicstore(&gp.stackLock, 0)
 
 	if prof.hz != 0 {
 		// Simple cas-lock to coordinate with setcpuprofilerate.

@@ -146,21 +146,53 @@ func mapbucket(t *Type) *Type {
 
 	arr.Type = Types[TUINT8]
 	arr.Bound = BUCKETSIZE
-	var field [4]*Type
-	field[0] = makefield("topbits", arr)
+	field := make([]*Type, 0, 5)
+	field = append(field, makefield("topbits", arr))
 	arr = typ(TARRAY)
 	arr.Type = keytype
 	arr.Bound = BUCKETSIZE
-	field[1] = makefield("keys", arr)
+	field = append(field, makefield("keys", arr))
 	arr = typ(TARRAY)
 	arr.Type = valtype
 	arr.Bound = BUCKETSIZE
-	field[2] = makefield("values", arr)
-	field[3] = makefield("overflow", Ptrto(bucket))
+	field = append(field, makefield("values", arr))
+
+	// Make sure the overflow pointer is the last memory in the struct,
+	// because the runtime assumes it can use size-ptrSize as the
+	// offset of the overflow pointer. We double-check that property
+	// below once the offsets and size are computed.
+	//
+	// BUCKETSIZE is 8, so the struct is aligned to 64 bits to this point.
+	// On 32-bit systems, the max alignment is 32-bit, and the
+	// overflow pointer will add another 32-bit field, and the struct
+	// will end with no padding.
+	// On 64-bit systems, the max alignment is 64-bit, and the
+	// overflow pointer will add another 64-bit field, and the struct
+	// will end with no padding.
+	// On nacl/amd64p32, however, the max alignment is 64-bit,
+	// but the overflow pointer will add only a 32-bit field,
+	// so if the struct needs 64-bit padding (because a key or value does)
+	// then it would end with an extra 32-bit padding field.
+	// Preempt that by emitting the padding here.
+	if int(t.Type.Align) > Widthptr || int(t.Down.Align) > Widthptr {
+		field = append(field, makefield("pad", Types[TUINTPTR]))
+	}
+
+	// If keys and values have no pointers, the map implementation
+	// can keep a list of overflow pointers on the side so that
+	// buckets can be marked as having no pointers.
+	// Arrange for the bucket to have no pointers by changing
+	// the type of the overflow field to uintptr in this case.
+	// See comment on hmap.overflow in ../../../../runtime/hashmap.go.
+	otyp := Ptrto(bucket)
+	if !haspointers(t.Type) && !haspointers(t.Down) && t.Type.Width <= MAXKEYSIZE && t.Down.Width <= MAXVALSIZE {
+		otyp = Types[TUINTPTR]
+	}
+	ovf := makefield("overflow", otyp)
+	field = append(field, ovf)
 
 	// link up fields
 	bucket.Noalg = 1
-
 	bucket.Local = t.Local
 	bucket.Type = field[0]
 	for n := int32(0); n < int32(len(field)-1); n++ {
@@ -169,15 +201,10 @@ func mapbucket(t *Type) *Type {
 	field[len(field)-1].Down = nil
 	dowidth(bucket)
 
-	// Pad to the native integer alignment.
-	// This is usually the same as widthptr; the exception (as usual) is amd64p32.
-	if Widthreg > Widthptr {
-		bucket.Width += int64(Widthreg) - int64(Widthptr)
-	}
-
-	// See comment on hmap.overflow in ../../runtime/hashmap.go.
-	if !haspointers(t.Type) && !haspointers(t.Down) && t.Type.Width <= MAXKEYSIZE && t.Down.Width <= MAXVALSIZE {
-		bucket.Haspointers = 1 // no pointers
+	// Double-check that overflow field is final memory in struct,
+	// with no padding at end. See comment above.
+	if ovf.Width != bucket.Width-int64(Widthptr) {
+		Yyerror("bad math in mapbucket for %v", t)
 	}
 
 	t.Bucket = bucket
@@ -337,13 +364,13 @@ func methods(t *Type) *Sig {
 	var method *Sym
 	for f := mt.Xmethod; f != nil; f = f.Down {
 		if f.Etype != TFIELD {
-			Fatal("methods: not field %v", f)
+			Fatalf("methods: not field %v", f)
 		}
 		if f.Type.Etype != TFUNC || f.Type.Thistuple == 0 {
-			Fatal("non-method on %v method %v %v\n", mt, f.Sym, f)
+			Fatalf("non-method on %v method %v %v\n", mt, f.Sym, f)
 		}
 		if getthisx(f.Type).Type == nil {
-			Fatal("receiver with no type on %v method %v %v\n", mt, f.Sym, f)
+			Fatalf("receiver with no type on %v method %v %v\n", mt, f.Sym, f)
 		}
 		if f.Nointerface {
 			continue
@@ -374,7 +401,7 @@ func methods(t *Type) *Sig {
 		a.name = method.Name
 		if !exportname(method.Name) {
 			if method.Pkg == nil {
-				Fatal("methods: missing package")
+				Fatalf("methods: missing package")
 			}
 			a.pkg = method.Pkg
 		}
@@ -418,7 +445,7 @@ func imethods(t *Type) *Sig {
 	var last *Sig
 	for f := t.Type; f != nil; f = f.Down {
 		if f.Etype != TFIELD {
-			Fatal("imethods: not field")
+			Fatalf("imethods: not field")
 		}
 		if f.Type.Etype != TFUNC || f.Sym == nil {
 			continue
@@ -428,7 +455,7 @@ func imethods(t *Type) *Sig {
 		a.name = method.Name
 		if !exportname(method.Name) {
 			if method.Pkg == nil {
-				Fatal("imethods: missing package")
+				Fatalf("imethods: missing package")
 			}
 			a.pkg = method.Pkg
 		}
@@ -438,7 +465,7 @@ func imethods(t *Type) *Sig {
 		a.type_ = methodfunc(f.Type, nil)
 
 		if last != nil && sigcmp(last, a) >= 0 {
-			Fatal("sigcmp vs sortinter %s %s", last.name, a.name)
+			Fatalf("sigcmp vs sortinter %s %s", last.name, a.name)
 		}
 		if last == nil {
 			all = a
@@ -680,7 +707,7 @@ func haspointers(t *Type) bool {
 		ret = true
 
 	case TFIELD:
-		Fatal("haspointers: unexpected type, %v", t)
+		Fatalf("haspointers: unexpected type, %v", t)
 	}
 
 	t.Haspointers = 1 + uint8(obj.Bool2int(ret))
@@ -731,7 +758,7 @@ func typeptrdata(t *Type) int64 {
 		return lastPtrField.Width + typeptrdata(lastPtrField.Type)
 
 	default:
-		Fatal("typeptrdata: unexpected type, %v", t)
+		Fatalf("typeptrdata: unexpected type, %v", t)
 		return 0
 	}
 }
@@ -745,7 +772,7 @@ var dcommontype_algarray *Sym
 
 func dcommontype(s *Sym, ot int, t *Type) int {
 	if ot != 0 {
-		Fatal("dcommontype %d", ot)
+		Fatalf("dcommontype %d", ot)
 	}
 
 	sizeofAlg := 2 * Widthptr
@@ -767,19 +794,7 @@ func dcommontype(s *Sym, ot int, t *Type) int {
 		sptr = weaktypesym(tptr)
 	}
 
-	// All (non-reflect-allocated) Types share the same zero object.
-	// Each place in the compiler where a pointer to the zero object
-	// might be returned by a runtime call (map access return value,
-	// 2-arg type cast) declares the size of the zerovalue it needs.
-	// The linker magically takes the max of all the sizes.
-	zero := Pkglookup("zerovalue", Runtimepkg)
-
 	gcsym, useGCProg, ptrdata := dgcsym(t)
-
-	// We use size 0 here so we get the pointer to the zero value,
-	// but don't allocate space for the zero value unless we need it.
-	// TODO: how do we get this symbol into bss?  We really want
-	// a read-only bss, but I don't think such a thing exists.
 
 	// ../../pkg/reflect/type.go:/^type.commonType
 	// actual type structure
@@ -796,7 +811,6 @@ func dcommontype(s *Sym, ot int, t *Type) int {
 	//		string        *string
 	//		*extraType
 	//		ptrToThis     *Type
-	//		zero          unsafe.Pointer
 	//	}
 	ot = duintptr(s, ot, uint64(t.Width))
 	ot = duintptr(s, ot, uint64(ptrdata))
@@ -811,7 +825,7 @@ func dcommontype(s *Sym, ot int, t *Type) int {
 		i = 1
 	}
 	if i&(i-1) != 0 {
-		Fatal("invalid alignment %d for %v", t.Align, t)
+		Fatalf("invalid alignment %d for %v", t.Align, t)
 	}
 	ot = duint8(s, ot, t.Align) // align
 	ot = duint8(s, ot, t.Align) // fieldAlign
@@ -849,7 +863,6 @@ func dcommontype(s *Sym, ot int, t *Type) int {
 	ot += Widthptr
 
 	ot = dsymptr(s, ot, sptr, 0) // ptrto type
-	ot = dsymptr(s, ot, zero, 0) // ptr to zero value
 	return ot
 }
 
@@ -891,7 +904,7 @@ func typesymprefix(prefix string, t *Type) *Sym {
 
 func typenamesym(t *Type) *Sym {
 	if t == nil || (Isptr[t.Etype] && t.Type == nil) || isideal(t) {
-		Fatal("typename %v", t)
+		Fatalf("typename %v", t)
 	}
 	s := typesym(t)
 	if s.Def == nil {
@@ -964,7 +977,7 @@ func isreflexive(t *Type) bool {
 
 	case TARRAY:
 		if Isslice(t) {
-			Fatal("slice can't be a map key: %v", t)
+			Fatalf("slice can't be a map key: %v", t)
 		}
 		return isreflexive(t.Type)
 
@@ -978,7 +991,7 @@ func isreflexive(t *Type) bool {
 		return true
 
 	default:
-		Fatal("bad type for map key: %v", t)
+		Fatalf("bad type for map key: %v", t)
 		return false
 	}
 }
@@ -992,7 +1005,7 @@ func dtypesym(t *Type) *Sym {
 	}
 
 	if isideal(t) {
-		Fatal("dtypesym %v", t)
+		Fatalf("dtypesym %v", t)
 	}
 
 	s := typesym(t)
@@ -1032,7 +1045,7 @@ ok:
 	switch t.Etype {
 	default:
 		ot = dcommontype(s, ot, t)
-		xt = ot - 3*Widthptr
+		xt = ot - 2*Widthptr
 
 	case TARRAY:
 		if t.Bound >= 0 {
@@ -1044,7 +1057,7 @@ ok:
 			t2.Bound = -1 // slice
 			s2 := dtypesym(t2)
 			ot = dcommontype(s, ot, t)
-			xt = ot - 3*Widthptr
+			xt = ot - 2*Widthptr
 			ot = dsymptr(s, ot, s1, 0)
 			ot = dsymptr(s, ot, s2, 0)
 			ot = duintptr(s, ot, uint64(t.Bound))
@@ -1053,7 +1066,7 @@ ok:
 			s1 := dtypesym(t.Type)
 
 			ot = dcommontype(s, ot, t)
-			xt = ot - 3*Widthptr
+			xt = ot - 2*Widthptr
 			ot = dsymptr(s, ot, s1, 0)
 		}
 
@@ -1062,7 +1075,7 @@ ok:
 		s1 := dtypesym(t.Type)
 
 		ot = dcommontype(s, ot, t)
-		xt = ot - 3*Widthptr
+		xt = ot - 2*Widthptr
 		ot = dsymptr(s, ot, s1, 0)
 		ot = duintptr(s, ot, uint64(t.Chan))
 
@@ -1081,7 +1094,7 @@ ok:
 		}
 
 		ot = dcommontype(s, ot, t)
-		xt = ot - 3*Widthptr
+		xt = ot - 2*Widthptr
 		ot = duint8(s, ot, uint8(obj.Bool2int(isddd)))
 
 		// two slice headers: in and out.
@@ -1120,7 +1133,7 @@ ok:
 		// ../../runtime/type.go:/InterfaceType
 		ot = dcommontype(s, ot, t)
 
-		xt = ot - 3*Widthptr
+		xt = ot - 2*Widthptr
 		ot = dsymptr(s, ot, s, ot+Widthptr+2*Widthint)
 		ot = duintxx(s, ot, uint64(n), Widthint)
 		ot = duintxx(s, ot, uint64(n), Widthint)
@@ -1140,7 +1153,7 @@ ok:
 		s3 := dtypesym(mapbucket(t))
 		s4 := dtypesym(hmap(t))
 		ot = dcommontype(s, ot, t)
-		xt = ot - 3*Widthptr
+		xt = ot - 2*Widthptr
 		ot = dsymptr(s, ot, s1, 0)
 		ot = dsymptr(s, ot, s2, 0)
 		ot = dsymptr(s, ot, s3, 0)
@@ -1176,7 +1189,7 @@ ok:
 		s1 := dtypesym(t.Type)
 
 		ot = dcommontype(s, ot, t)
-		xt = ot - 3*Widthptr
+		xt = ot - 2*Widthptr
 		ot = dsymptr(s, ot, s1, 0)
 
 		// ../../runtime/type.go:/StructType
@@ -1190,7 +1203,7 @@ ok:
 		}
 
 		ot = dcommontype(s, ot, t)
-		xt = ot - 3*Widthptr
+		xt = ot - 2*Widthptr
 		ot = dsymptr(s, ot, s, ot+Widthptr+2*Widthint)
 		ot = duintxx(s, ot, uint64(n), Widthint)
 		ot = duintxx(s, ot, uint64(n), Widthint)
@@ -1478,7 +1491,7 @@ func fillptrmask(t *Type, ptrmask []byte) {
 func dgcprog(t *Type) (*Sym, int64) {
 	dowidth(t)
 	if t.Width == BADWIDTH {
-		Fatal("dgcprog: %v badwidth", t)
+		Fatalf("dgcprog: %v badwidth", t)
 	}
 	sym := typesymprefix(".gcprog", t)
 	var p GCProg
@@ -1487,7 +1500,7 @@ func dgcprog(t *Type) (*Sym, int64) {
 	offset := p.w.BitIndex() * int64(Widthptr)
 	p.end()
 	if ptrdata := typeptrdata(t); offset < ptrdata || offset > t.Width {
-		Fatal("dgcprog: %v: offset=%d but ptrdata=%d size=%d", t, offset, ptrdata, t.Width)
+		Fatalf("dgcprog: %v: offset=%d but ptrdata=%d size=%d", t, offset, ptrdata, t.Width)
 	}
 	return sym, offset
 }
@@ -1534,7 +1547,7 @@ func (p *GCProg) emit(t *Type, offset int64) {
 	}
 	switch t.Etype {
 	default:
-		Fatal("GCProg.emit: unexpected type %v", t)
+		Fatalf("GCProg.emit: unexpected type %v", t)
 
 	case TSTRING:
 		p.w.Ptr(offset / int64(Widthptr))
@@ -1550,7 +1563,7 @@ func (p *GCProg) emit(t *Type, offset int64) {
 		}
 		if t.Bound == 0 {
 			// should have been handled by haspointers check above
-			Fatal("GCProg.emit: empty array")
+			Fatalf("GCProg.emit: empty array")
 		}
 
 		// Flatten array-of-array-of-array to just a big array by multiplying counts.

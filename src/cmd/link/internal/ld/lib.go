@@ -44,6 +44,7 @@ import (
 	"os"
 	"os/exec"
 	"path/filepath"
+	"runtime"
 	"strings"
 )
 
@@ -563,6 +564,24 @@ func loadlib() {
 	tlsg.Reachable = true
 	Ctxt.Tlsg = tlsg
 
+	moduledata := Linklookup(Ctxt, "runtime.firstmoduledata", 0)
+	if moduledata.Type == 0 || moduledata.Type == obj.SDYNIMPORT {
+		// If the module we are linking does not define the
+		// runtime.firstmoduledata symbol, create a local symbol for
+		// the moduledata.
+		moduledata = Linklookup(Ctxt, "local.moduledata", 0)
+		moduledata.Local = true
+	} else {
+		// If OTOH the module does define the symbol, we truncate the
+		// symbol back to 0 bytes so we can define its entire
+		// contents.
+		moduledata.Size = 0
+	}
+	// Either way we mark it as noptrdata to hide it from the GC.
+	moduledata.Type = obj.SNOPTRDATA
+	moduledata.Reachable = true
+	Ctxt.Moduledata = moduledata
+
 	// Now that we know the link mode, trim the dynexp list.
 	x := CgoExportDynamic
 
@@ -836,6 +855,7 @@ func hostlinksetup() {
 
 	// change our output to temporary object file
 	coutbuf.f.Close()
+	mayberemoveoutfile()
 
 	p := fmt.Sprintf("%s/go.o", tmpdir)
 	var err error
@@ -882,7 +902,7 @@ func archive() {
 		return
 	}
 
-	os.Remove(outfile)
+	mayberemoveoutfile()
 	argv := []string{"ar", "-q", "-c", "-s", outfile}
 	argv = append(argv, hostobjCopy()...)
 	argv = append(argv, fmt.Sprintf("%s/go.o", tmpdir))
@@ -984,8 +1004,18 @@ func hostlink() {
 		argv = append(argv, fmt.Sprintf("-Wl,--build-id=0x%x", buildinfo))
 	}
 
+	// On Windows, given -o foo, GCC will append ".exe" to produce
+	// "foo.exe".  We have decided that we want to honor the -o
+	// option.  To make this work, we append a '.' so that GCC
+	// will decide that the file already has an extension.  We
+	// only want to do this when producing a Windows output file
+	// on a Windows host.
+	outopt := outfile
+	if goos == "windows" && runtime.GOOS == "windows" && filepath.Ext(outopt) == "" {
+		outopt += "."
+	}
 	argv = append(argv, "-o")
-	argv = append(argv, outfile)
+	argv = append(argv, outopt)
 
 	if rpath.val != "" {
 		argv = append(argv, fmt.Sprintf("-Wl,-rpath,%s", rpath.val))
@@ -1083,16 +1113,16 @@ func hostlink() {
 				Ctxt.Cursym = nil
 				Exitf("%s: running dsymutil failed: %v\n%s", os.Args[0], err, out)
 			}
-			combinedOutput := fmt.Sprintf("%s/go.combined", tmpdir)
+			// For os.Rename to work reliably, must be in same directory as outfile.
+			combinedOutput := outfile + "~"
 			if err := machoCombineDwarf(outfile, dsym, combinedOutput); err != nil {
 				Ctxt.Cursym = nil
 				Exitf("%s: combining dwarf failed: %v", os.Args[0], err)
 			}
-			origOutput := fmt.Sprintf("%s/go.orig", tmpdir)
-			os.Rename(outfile, origOutput)
+			os.Remove(outfile)
 			if err := os.Rename(combinedOutput, outfile); err != nil {
 				Ctxt.Cursym = nil
-				Exitf("%s: rename(%s, %s) failed: %v", os.Args[0], combinedOutput, outfile, err)
+				Exitf("%s: %v", os.Args[0], err)
 			}
 		}
 	}
@@ -1453,10 +1483,7 @@ type Chain struct {
 	limit int // limit on entry to sym
 }
 
-var (
-	morestack *LSym
-	newstack  *LSym
-)
+var morestack *LSym
 
 // TODO: Record enough information in new object files to
 // allow stack checks here.
@@ -1476,7 +1503,6 @@ func dostkcheck() {
 	var ch Chain
 
 	morestack = Linklookup(Ctxt, "runtime.morestack", 0)
-	newstack = Linklookup(Ctxt, "runtime.newstack", 0)
 
 	// Every splitting function ensures that there are at least StackLimit
 	// bytes available below SP when the splitting prologue finishes.
@@ -1521,7 +1547,8 @@ func stkcheck(up *Chain, depth int) int {
 
 	// Don't duplicate work: only need to consider each
 	// function at top of safe zone once.
-	if limit == obj.StackLimit-callsize() {
+	top := limit == obj.StackLimit-callsize()
+	if top {
 		if s.Stkcheck != 0 {
 			return 0
 		}
@@ -1559,39 +1586,21 @@ func stkcheck(up *Chain, depth int) int {
 	var ch Chain
 	ch.up = up
 
-	// Check for a call to morestack anywhere and treat it
-	// as occurring at function entry.
-	// The decision about whether to call morestack occurs
-	// in the prolog, but the call site is near the end
-	// of the function on some architectures.
-	// This is needed because the stack check is flow-insensitive,
-	// so it incorrectly thinks the call to morestack happens wherever it shows up.
-	// This check will be wrong if there are any hand-inserted calls to morestack.
-	// There are not any now, nor should there ever be.
-	for _, r := range s.R {
-		if r.Sym == nil || !strings.HasPrefix(r.Sym.Name, "runtime.morestack") {
-			continue
-		}
-		// Ignore non-calls to morestack, such as the jump to morestack
-		// found in the implementation of morestack_noctxt.
-		switch r.Type {
-		default:
-			continue
-		case obj.R_CALL, obj.R_CALLARM, obj.R_CALLARM64, obj.R_CALLPOWER:
-		}
-
+	if s.Nosplit == 0 {
 		// Ensure we have enough stack to call morestack.
 		ch.limit = limit - callsize()
-		ch.sym = r.Sym
+		ch.sym = morestack
 		if stkcheck(&ch, depth+1) < 0 {
 			return -1
 		}
-		// Bump up the limit.
+		if !top {
+			return 0
+		}
+		// Raise limit to allow frame.
 		limit = int(obj.StackLimit + s.Locals)
 		if haslinkregister() {
 			limit += Thearch.Regsize
 		}
-		break // there can be only one
 	}
 
 	// Walk through sp adjustments in function, consuming relocs.
@@ -1616,11 +1625,6 @@ func stkcheck(up *Chain, depth int) int {
 			switch r.Type {
 			// Direct call.
 			case obj.R_CALL, obj.R_CALLARM, obj.R_CALLARM64, obj.R_CALLPOWER:
-				// We handled calls to morestack already.
-				if strings.HasPrefix(r.Sym.Name, "runtime.morestack") {
-					continue
-				}
-
 				ch.limit = int(int32(limit) - pcsp.value - int32(callsize()))
 				ch.sym = r.Sym
 				if stkcheck(&ch, depth+1) < 0 {
@@ -1658,6 +1662,9 @@ func stkprint(ch *Chain, limit int) {
 
 	if ch.sym != nil {
 		name = ch.sym.Name
+		if ch.sym.Nosplit != 0 {
+			name += " (nosplit)"
+		}
 	} else {
 		name = "function pointer"
 	}
@@ -1793,6 +1800,7 @@ func genasmsym(put func(*LSym, string, int, int64, int64, int, *LSym)) {
 			obj.SSTRING,
 			obj.SGOSTRING,
 			obj.SGOFUNC,
+			obj.SGCBITS,
 			obj.SWINDOWS:
 			if !s.Reachable {
 				continue

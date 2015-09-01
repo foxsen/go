@@ -165,14 +165,6 @@ TEXT	foo(SB), 0, $0
 //	}
 	STREX.S	(R2), R3
 
-// CASE
-//
-//	LTYPED cond reg
-//	{
-//		outcode($1, $2, &$3, 0, &nullgen);
-//	}
-	CASE.S	R1
-
 //
 // word
 //
@@ -274,6 +266,13 @@ TEXT	foo(SB), 0, $0
 //		outcode($1, $2, &nullgen, 0, &nullgen);
 //	}
 	RET
+
+// More B/BL cases, and canonical names JMP, CALL.
+
+	B	foo(SB)
+	BL	foo(SB)
+	JMP	foo(SB)
+	CALL	foo(SB)
 
 //
 // END
